@@ -1,0 +1,142 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Webブラウザ試着アプリ (MediaPipe Pose)</title>
+    
+    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/camera_utils/camera_utils.js" crossorigin="anonymous"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/pose/pose.js" crossorigin="anonymous"></script>
+
+    <style>
+        body {
+            margin: 0;
+            padding: 0;
+            background-color: #222;
+            color: #fff;
+            text-align: center;
+            font-family: sans-serif;
+        }
+        h1 {
+            font-size: 1.2rem;
+            margin: 10px 0;
+        }
+        #container {
+            position: relative;
+            width: 100%;
+            max-width: 600px;
+            margin: 0 auto;
+        }
+        /* カメラ映像と描画用キャンバスを重ねるためのスタイル */
+        video, canvas {
+            display: block;
+            width: 100%;
+            height: auto;
+            transform: scaleX(-1); /* 鏡写しにする */
+            border-radius: 8px;
+        }
+        canvas {
+            position: absolute;
+            top: 0;
+            left: 0;
+        }
+    </style>
+</head>
+<body>
+
+    <h1>👕 Tシャツ試着シミュレーター</h1>
+    <p style="font-size: 0.8rem; color: #aaa;">スマホを正面に向けて全身（上半身）を映してください</p>
+
+    <div id="container">
+        <video id="webcam" autoplay playsinline></video>
+        <div id="output_canvas"></div>
+    </div>
+
+    <script>
+        const videoElement = document.getElementById('webcam');
+        const canvasElement = document.createElement('canvas');
+        const canvasCtx = canvasElement.getContext('2d');
+        document.getElementById('output_canvas').appendChild(canvasElement);
+
+        // 重ねたいTシャツの画像を読み込む
+        const tshirtImg = new Image();
+        tshirtImg.src = 'dolphin_2708695_1920.png'; // ※同じ階層に置くTシャツ画像のファイル名
+
+        function onResults(results) {
+            // キャンバスのサイズをカメラ映像に合わせる
+            canvasElement.width = videoElement.videoWidth;
+            canvasElement.height = videoElement.videoHeight;
+
+            canvasCtx.save();
+            canvasCtx.clearRect(0, 0, canvasElement.width, canvasElement.height);
+
+            // カメラの映像をそのまま描画
+            canvasCtx.drawImage(results.image, 0, 0, canvasElement.width, canvasElement.height);
+
+            // MediaPipe Pose で骨格（関節）が検出された場合
+            if (results.poseLandmarks) {
+                const landmarks = results.poseLandmarks;
+
+                // MediaPipeの番号: 11番(左肩), 12番(右肩)
+                const leftShoulder = landmarks[11];
+                const rightShoulder = landmarks[12];
+
+                if (leftShoulder && rightShoulder) {
+                    // 画面上の座標（ピクセル）に変換
+                    const x1 = leftShoulder.x * canvasElement.width;
+                    const y1 = leftShoulder.y * canvasElement.height;
+                    const x2 = rightShoulder.x * canvasElement.width;
+                    const y2 = rightShoulder.y * canvasElement.height;
+
+                    // 左右の肩の中点（中心）を計算
+                    const centerX = (x1 + x2) / 2;
+                    const centerY = (y1 + y2) / 2;
+
+                    // 左右の肩の幅を計算
+                    const shoulderWidth = Math.sqrt(Math.pow(x2 - x1, 2) + Math.pow(y2 - y1, 2));
+
+                    // Tシャツのサイズと位置を肩幅に合わせて調整
+                    const imgWidth = shoulderWidth * 2.2; // 肩幅に対するTシャツの倍率
+                    const imgHeight = (tshirtImg.height / tshirtImg.width) * imgWidth;
+
+                    // 配置座標（肩の中心を基準に、少し上にオフセットして首元に合わせる）
+                    const imgX = centerX - (imgWidth / 2);
+                    const imgY = centerY - (imgHeight * 0.3);
+
+                    // Tシャツ画像を描画
+                    if (tshirtImg.complete) {
+                        canvasCtx.drawImage(tshirtImg, imgX, imgY, imgWidth, imgHeight);
+                    }
+                }
+            }
+            canvasCtx.restore();
+        }
+
+        // MediaPipe Pose の初期設定
+        const pose = new Pose({
+            locateFile: (file) => `https://cdn.jsdelivr.net/npm/@mediapipe/pose/${file}`
+        });
+
+        pose.setOptions({
+            modelComplexity: 1,
+            smoothLandmarks: true,
+            enableSegmentation: false,
+            smoothSegmentation: true,
+            minDetectionConfidence: 0.5,
+            minTrackingConfidence: 0.5
+        });
+
+        pose.onResults(onResults);
+
+        // スマホのインカメラを起動してMediaPipeに流し込む
+        const camera = new Camera(videoElement, {
+            onFrame: async () => {
+                await pose.send({ image: videoElement });
+            },
+            width: 640,
+            height: 480
+        });
+        camera.start();
+    </script>
+</body>
+</html>
