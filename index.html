@@ -2,175 +2,200 @@
 <html lang="ja">
 <head>
     <meta charset="UTF-8">
-    <title>Web AR 試着シミュレーター</title>
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>MediaPipe T-Shirt Try-On</title>
+    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/camera_utils/camera_utils.js" crossorigin="anonymous"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/pose/pose.js" crossorigin="anonymous"></script>
     <style>
         body {
             margin: 0;
             padding: 0;
-            background: #111;
-            color: #fff;
-            font-family: sans-serif;
-            text-align: center;
+            overflow: hidden;
+            width: 100vw;
+            height: 100vh;
+            background-color: #000;
         }
-        h1 {
-            font-size: 1.2rem;
-            margin: 10px 0;
-        }
-        .controls {
-            margin: 10px auto;
-            background: rgba(255, 255, 255, 0.1);
-            padding: 10px;
-            border-radius: 8px;
-            display: inline-block;
-        }
-        label {
-            font-size: 14px;
-        }
-        input[type="range"] {
-            width: 200px;
-            vertical-align: middle;
-            margin-left: 10px;
-        }
-        button {
-            padding: 8px 16px;
-            margin: 5px;
-            background: #007bff;
-            color: white;
-            border: none;
-            border-radius: 4px;
-            cursor: pointer;
-            font-size: 14px;
-        }
-        button:hover {
-            background: #0056b3;
-        }
-        #container {
+        .container {
             position: relative;
-            display: inline-block;
-            margin-top: 10px;
+            width: 100%;
+            height: 100%;
+            display: flex;
+            justify-content: center;
+            align-items: center;
         }
         video {
-            display: none; /* ビデオ自体は非表示にし、Canvasに描画します */
+            position: absolute;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            object-fit: cover; /* カメラ映像を画面全体にフィットさせる */
+            z-index: 1;
+            transform: scaleX(-1); /* インカメラは鏡写しに */
         }
         canvas {
+            position: absolute;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            object-fit: cover;
+            z-index: 2;
+            pointer-events: none; /* クリック操作を下に透過させる */
+        }
+        #ui-controls {
+            position: absolute;
+            top: 10px;
+            left: 10px;
+            z-index: 10;
+            background: rgba(255, 255, 255, 0.7);
+            padding: 10px;
+            border-radius: 5px;
+        }
+        .control-group {
+            margin-bottom: 10px;
+        }
+        button, input {
             display: block;
-            max-width: 100%;
-            height: auto;
+            width: 100%;
+            margin-bottom: 5px;
+            padding: 5px;
         }
     </style>
 </head>
 <body>
 
-    <h1>Web AR 試着アプリ006</h1>
-    
-    <div class="controls">
-        <button id="switchCameraBtn">カメラ切り替え (イン/アウト)</button><br><br>
-        <label for="scaleRange">画像サイズ微調整: <span id="scaleValue">1.0</span>倍</label><br>
-        <input type="range" id="scaleRange" min="0.4" max="2.5" step="0.05" value="1.0">
+    <div id="ui-controls">
+        <div class="control-group">
+            <button id="switch-camera">カメラ切り替え (In/Out)</button>
+        </div>
+        <div class="control-group">
+            <label for="scale-slider">サイズ微調整 (0.4倍 - 2.5倍)</label>
+            <input type="range" id="scale-slider" min="0.4" max="2.5" step="0.05" value="1.2">
+        </div>
     </div>
 
-    <div id="container">
-        <video id="webcam" autoplay playsinline width="640" height="480"></video>
-        <canvas id="output_canvas" width="640" height="480"></canvas>
+    <div class="container">
+        <video id="video-input" autoplay playsinline></video>
+        <canvas id="canvas-output"></canvas>
     </div>
-
-    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/camera_utils/camera_utils.js" crossorigin="anonymous"></script>
-    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/pose/pose.js" crossorigin="anonymous"></script>
 
     <script>
-        const videoElement = document.getElementById('webcam');
-        const canvasElement = document.getElementById('output_canvas');
+        const videoElement = document.getElementById('video-input');
+        const canvasElement = document.getElementById('canvas-output');
         const canvasCtx = canvasElement.getContext('2d');
-        
-        const scaleRange = document.getElementById('scaleRange');
-        const scaleValueText = document.getElementById('scaleValue');
-        const switchCameraBtn = document.getElementById('switchCameraBtn');
+        const scaleSlider = document.getElementById('scale-slider');
+        const switchCameraButton = document.getElementById('switch-camera');
 
-        let manualScale = 1.0;
-        scaleRange.addEventListener('input', (e) => {
-            manualScale = parseFloat(e.target.value);
-            scaleValueText.textContent = manualScale.toFixed(2);
+        let currentCameraMode = 'user'; // 'user' (インカメラ) or 'environment' (アウトカメラ)
+        let baseScaleFactor = 1.2; // インカメラ時の近距離を考慮したコンパクトな基準倍率 [cite: 148]
+        let currentScaleFactor = baseScaleFactor;
+        let isCanvasMirrored = true; // キャンバスも反転させるかどうか
+
+        // スライダーで倍率を更新 [cite: 147]
+        scaleSlider.addEventListener('input', (event) => {
+            currentScaleFactor = parseFloat(event.target.value);
         });
 
-        // 指定された試着画像の設定
-        const tshirtImg = new Image();
-        tshirtImg.src = 't-shirt-1976334_1920.png';
-        let isImageLoaded = false;
-        tshirtImg.onload = () => {
-            isImageLoaded = true;
-        };
+        // カメラ切り替えボタン [cite: 145, 149]
+        switchCameraButton.addEventListener('click', () => {
+            currentCameraMode = (currentCameraMode === 'user') ? 'environment' : 'user';
+            isCanvasMirrored = (currentCameraMode === 'user'); // インカメラの時だけ鏡写しにする
+            
+            // カメラを再起動
+            camera.stop();
+            camera = new Camera(videoElement, {
+                onFrame: async () => {
+                    await pose.send({image: videoElement});
+                },
+                facingMode: currentCameraMode,
+                width: 1280,
+                height: 720
+            });
+            camera.start();
+        });
 
-        // カメラ設定（初期値：インカメラ 'user'）
-        let currentFacingMode = 'user'; 
-        let camera = null;
+        // 重ねたいTシャツの画像を読み込む [cite: 123, 149]
+        const tshirtImg = new Image();
+        tshirtImg.src = 't-shirt-1976334_1920.png'; // 指定されたファイル名を反映 [cite: 149]
+        tshirtImg.crossOrigin = "anonymous"; // CORS対策 [cite: 120]
 
         function onResults(results) {
+            // ビデオの解像度を取得 [cite: 124]
+            const videoWidth = videoElement.videoWidth;
+            const videoHeight = videoElement.videoHeight;
+
+            // キャンバスのサイズをカメラ映像の解像度に合わせる [cite: 124]
+            canvasElement.width = videoWidth;
+            canvasElement.height = videoHeight;
+
             canvasCtx.save();
             canvasCtx.clearRect(0, 0, canvasElement.width, canvasElement.height);
 
-            // インカメラの時は鏡写し（左右反転）、アウトカメラの時はそのまま描画
-            canvasCtx.save();
-            if (currentFacingMode === 'user') {
-                canvasCtx.scale(-1, 1);
-                canvasCtx.drawImage(results.image, -canvasElement.width, 0, canvasElement.width, canvasElement.height);
-            } else {
-                canvasCtx.drawImage(results.image, 0, 0, canvasElement.width, canvasElement.height);
-            }
+            // ビデオ映像を描画 [cite: 125]
+            canvasCtx.drawImage(results.image, 0, 0, canvasElement.width, canvasElement.height);
 
-            if (results.poseLandmarks && isImageLoaded) {
+            // MediaPipe Pose で骨格（関節）が検出された場合 [cite: 126]
+            if (results.poseLandmarks) {
                 const landmarks = results.poseLandmarks;
 
-                // 左右の肩の座標 (11: 左肩, 12: 右肩)
-                const leftShoulder = landmarks[11];
-                const rightShoulder = landmarks[12];
+                // MediaPipeの番号: 11番(左肩), 12番(右肩) [cite: 127]
+                let leftShoulder = landmarks[11];
+                let rightShoulder = landmarks[12];
 
-                const canvasWidth = canvasElement.width;
-                const canvasHeight = canvasElement.height;
+                // インカメラの場合はCSSで反転させているため、内部処理用に左右を入れ替えて扱う [cite: 141, 145]
+                if (currentCameraMode === 'user') {
+                    [leftShoulder, rightShoulder] = [rightShoulder, leftShoulder];
+                }
 
-                let shoulderX_left = leftShoulder.x * canvasWidth;
-                let shoulderX_right = rightShoulder.x * canvasWidth;
+                if (leftShoulder && rightShoulder) {
+                    // 画面上の座標（ピクセル）に変換 [cite: 128]
+                    const x1 = leftShoulder.x * canvasElement.width;
+                    const y1 = leftShoulder.y * canvasElement.height;
+                    const x2 = rightShoulder.x * canvasElement.width;
+                    const y2 = rightShoulder.y * canvasElement.height;
 
-                // 肩の中点位置
-                const shoulderX = (shoulderX_left + shoulderX_right) / 2;
-                const shoulderY = (leftShoulder.y + rightShoulder.y) / 2 * canvasHeight;
+                    // 左右の肩の中点（中心）を計算 [cite: 130]
+                    const centerX = (x1 + x2) / 2;
+                    const centerY = (y1 + y2) / 2;
 
-                // 肩幅の計算
-                const dx = shoulderX_left - shoulderX_right;
-                const dy = (leftShoulder.y - rightShoulder.y) * canvasHeight;
-                const shoulderWidth = Math.sqrt(dx * dx + dy * dy);
+                    // 左右の肩の幅を計算 [cite: 131]
+                    const shoulderWidth = Math.hypot(x2 - x1, y2 - y1);
 
-                // --- サイズ調整 ---
-                // インカメラで近すぎる場合を考慮した基本係数（1.1）× スライダーの微調整値
-                const baseScaleFactor = 1.1; 
-                const targetWidth = shoulderWidth * baseScaleFactor * manualScale;
-                const aspectRatio = tshirtImg.height / tshirtImg.width;
-                const targetHeight = targetWidth * aspectRatio;
+                    // 左右の肩を結ぶ角度（傾き）を計算 [cite: 226]
+                    const angle = Math.atan2(y2 - y1, x2 - x1);
 
-                // 位置調整（首元・胸元に綺麗にフィットするように配置）
-                const offsetX = shoulderX;
-                const offsetY = shoulderY - (targetHeight * 0.25); 
+                    // Tシャツのサイズを肩幅に合わせて調整 [cite: 132]
+                    // 肩幅に対する倍率 = baseScaleFactor * スライダーの値 [cite: 148, 147]
+                    const imgWidth = shoulderWidth * currentScaleFactor;
+                    const imgHeight = (tshirtImg.height / tshirtImg.width) * imgWidth;
 
-                canvasCtx.translate(offsetX, offsetY);
+                    // 配置座標（肩の中心を基準に、少し上にオフセットして首元に合わせる） [cite: 134, 145]
+                    const imgX = centerX - (imgWidth / 2);
+                    const imgY = centerY - (imgHeight * 0.35); // オフセット量を調整 [cite: 143]
 
-                // 試着画像の描画
-                canvasCtx.drawImage(
-                    tshirtImg,
-                    -targetWidth / 2,
-                    -targetHeight / 2,
-                    targetWidth,
-                    targetHeight
-                );
+                    // Tシャツ画像を描画 [cite: 136, 142]
+                    canvasCtx.save(); // 描画状態を保存
+
+                    // 画像の中心を基準点に移動
+                    canvasCtx.translate(centerX, centerY);
+                    // 傾きに合わせて回転
+                    canvasCtx.rotate(angle);
+
+                    // 画像を描画（基準点を中心に戻して配置） [cite: 136]
+                    canvasCtx.drawImage(tshirtImg, -imgWidth / 2, -imgHeight / 0.35 * 0.1, imgWidth, imgHeight);
+
+                    canvasCtx.restore(); // 描画状態を復元
+                }
             }
-            canvasCtx.restore();
+
             canvasCtx.restore();
         }
 
-        const pose = new Pose({
-            locateFile: (file) => {
-                return `https://cdn.jsdelivr.net/npm/@mediapipe/pose/${file}`;
-            }
-        });
-
+        // MediaPipe Pose の初期設定 [cite: 138]
+        const pose = new Pose({locateFile: (file) => {
+            return `https://cdn.jsdelivr.net/npm/@mediapipe/pose/${file}`;
+        }});
         pose.setOptions({
             modelComplexity: 1,
             smoothLandmarks: true,
@@ -179,32 +204,19 @@
             minDetectionConfidence: 0.5,
             minTrackingConfidence: 0.5
         });
-
         pose.onResults(onResults);
 
-        function startCamera() {
-            if (camera) {
-                camera.stop();
-            }
-            camera = new Camera(videoElement, {
-                onFrame: async () => {
-                    await pose.send({ image: videoElement });
-                },
-                width: 640,
-                height: 480,
-                facingMode: currentFacingMode
-            });
-            camera.start();
-        }
-
-        // カメラ切り替えボタンのクリックイベント
-        switchCameraBtn.addEventListener('click', () => {
-            currentFacingMode = (currentFacingMode === 'user') ? 'environment' : 'user';
-            startCamera();
+        // スマホのカメラを起動してMediaPipeに流し込む [cite: 140, 145]
+        let camera = new Camera(videoElement, {
+            onFrame: async () => {
+                await pose.send({image: videoElement});
+            },
+            facingMode: currentCameraMode,
+            width: 1280,
+            height: 720
         });
+        camera.start();
 
-        // 初回カメラ起動
-        startCamera();
     </script>
 </body>
 </html>
