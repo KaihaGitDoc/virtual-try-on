@@ -2,7 +2,7 @@
 <html lang="ja">
 <head>
     <meta charset="UTF-8">
-    <title>Web AR 試着シミュレーター（サイズ微調整対応）</title>
+    <title>Web AR 試着シミュレーター</title>
     <style>
         body {
             margin: 0;
@@ -16,7 +16,6 @@
             font-size: 1.2rem;
             margin: 10px 0;
         }
-        /* サイズ微調整用のスライダーエリア */
         .controls {
             margin: 10px auto;
             background: rgba(255, 255, 255, 0.1);
@@ -28,34 +27,44 @@
             font-size: 14px;
         }
         input[type="range"] {
-            width: 220px;
+            width: 200px;
             vertical-align: middle;
             margin-left: 10px;
+        }
+        button {
+            padding: 8px 16px;
+            margin: 5px;
+            background: #007bff;
+            color: white;
+            border: none;
+            border-radius: 4px;
+            cursor: pointer;
+            font-size: 14px;
+        }
+        button:hover {
+            background: #0056b3;
         }
         #container {
             position: relative;
             display: inline-block;
             margin-top: 10px;
         }
-        video, canvas {
-            display: block;
-            /* インカメラの場合の左右反転（必要に応じて有効化） */
-            transform: scaleX(-1);
-            max-width: 100%;
-            height: auto;
+        video {
+            display: none; /* ビデオ自体は非表示にし、Canvasに描画します */
         }
         canvas {
-            position: absolute;
-            top: 0;
-            left: 0;
+            display: block;
+            max-width: 100%;
+            height: auto;
         }
     </style>
 </head>
 <body>
 
-    <h1>Web AR 試着アプリ005</h1>
+    <h1>Web AR 試着アプリ006</h1>
     
     <div class="controls">
+        <button id="switchCameraBtn">カメラ切り替え (イン/アウト)</button><br><br>
         <label for="scaleRange">画像サイズ微調整: <span id="scaleValue">1.0</span>倍</label><br>
         <input type="range" id="scaleRange" min="0.4" max="2.5" step="0.05" value="1.0">
     </div>
@@ -73,31 +82,40 @@
         const canvasElement = document.getElementById('output_canvas');
         const canvasCtx = canvasElement.getContext('2d');
         
-        // スライダー要素の取得
         const scaleRange = document.getElementById('scaleRange');
         const scaleValueText = document.getElementById('scaleValue');
+        const switchCameraBtn = document.getElementById('switchCameraBtn');
 
-        // ユーザーの手動調整倍率
         let manualScale = 1.0;
         scaleRange.addEventListener('input', (e) => {
             manualScale = parseFloat(e.target.value);
             scaleValueText.textContent = manualScale.toFixed(2);
         });
 
-        // 重ねたい画像（シャツなど）の読み込み
+        // 指定された試着画像の設定
         const tshirtImg = new Image();
-        tshirtImg.src = 't-shirt-1976334_1920.png'; // ※ご自身の画像ファイル名に合わせてください
+        tshirtImg.src = 't-shirt-1976334_1920.png';
         let isImageLoaded = false;
         tshirtImg.onload = () => {
             isImageLoaded = true;
         };
 
+        // カメラ設定（初期値：インカメラ 'user'）
+        let currentFacingMode = 'user'; 
+        let camera = null;
+
         function onResults(results) {
             canvasCtx.save();
             canvasCtx.clearRect(0, 0, canvasElement.width, canvasElement.height);
 
-            // カメラ映像を描画
-            canvasCtx.drawImage(results.image, 0, 0, canvasElement.width, canvasElement.height);
+            // インカメラの時は鏡写し（左右反転）、アウトカメラの時はそのまま描画
+            canvasCtx.save();
+            if (currentFacingMode === 'user') {
+                canvasCtx.scale(-1, 1);
+                canvasCtx.drawImage(results.image, -canvasElement.width, 0, canvasElement.width, canvasElement.height);
+            } else {
+                canvasCtx.drawImage(results.image, 0, 0, canvasElement.width, canvasElement.height);
+            }
 
             if (results.poseLandmarks && isImageLoaded) {
                 const landmarks = results.poseLandmarks;
@@ -109,33 +127,32 @@
                 const canvasWidth = canvasElement.width;
                 const canvasHeight = canvasElement.height;
 
-                // 肩の中点位置（ピクセル座標）
-                const shoulderX = (leftShoulder.x + rightShoulder.x) / 2 * canvasWidth;
+                let shoulderX_left = leftShoulder.x * canvasWidth;
+                let shoulderX_right = rightShoulder.x * canvasWidth;
+
+                // 肩の中点位置
+                const shoulderX = (shoulderX_left + shoulderX_right) / 2;
                 const shoulderY = (leftShoulder.y + rightShoulder.y) / 2 * canvasHeight;
 
                 // 肩幅の計算
-                const dx = (leftShoulder.x - rightShoulder.x) * canvasWidth;
+                const dx = shoulderX_left - shoulderX_right;
                 const dy = (leftShoulder.y - rightShoulder.y) * canvasHeight;
                 const shoulderWidth = Math.sqrt(dx * dx + dy * dy);
 
-                // --- 【ポイント】サイズ計算の調整 ---
-                // インカメラで近すぎる場合を考慮し、基準係数を「1.2」程度にやや小さめに設定
-                // さらにスライダーの `manualScale` を掛け合わせることで自由に変更可能に
-                const baseScaleFactor = 1.2; 
+                // --- サイズ調整 ---
+                // インカメラで近すぎる場合を考慮した基本係数（1.1）× スライダーの微調整値
+                const baseScaleFactor = 1.1; 
                 const targetWidth = shoulderWidth * baseScaleFactor * manualScale;
                 const aspectRatio = tshirtImg.height / tshirtImg.width;
                 const targetHeight = targetWidth * aspectRatio;
 
-                // 画像の位置調整（肩の中点から少し上に配置して首元に合わせる）
+                // 位置調整（首元・胸元に綺麗にフィットするように配置）
                 const offsetX = shoulderX;
-                const offsetY = shoulderY - (targetHeight * 0.28); 
+                const offsetY = shoulderY - (targetHeight * 0.25); 
 
-                // 描画実行
                 canvasCtx.translate(offsetX, offsetY);
-                
-                // ※もし映像が反転していて画像がズレる場合は、以下のコメントアウトを解除してみてください
-                // canvasCtx.scale(-1, 1);
 
+                // 試着画像の描画
                 canvasCtx.drawImage(
                     tshirtImg,
                     -targetWidth / 2,
@@ -144,6 +161,7 @@
                     targetHeight
                 );
             }
+            canvasCtx.restore();
             canvasCtx.restore();
         }
 
@@ -164,14 +182,29 @@
 
         pose.onResults(onResults);
 
-        const camera = new Camera(videoElement, {
-            onFrame: async () => {
-                await pose.send({ image: videoElement });
-            },
-            width: 640,
-            height: 480
+        function startCamera() {
+            if (camera) {
+                camera.stop();
+            }
+            camera = new Camera(videoElement, {
+                onFrame: async () => {
+                    await pose.send({ image: videoElement });
+                },
+                width: 640,
+                height: 480,
+                facingMode: currentFacingMode
+            });
+            camera.start();
+        }
+
+        // カメラ切り替えボタンのクリックイベント
+        switchCameraBtn.addEventListener('click', () => {
+            currentFacingMode = (currentFacingMode === 'user') ? 'environment' : 'user';
+            startCamera();
         });
-        camera.start();
+
+        // 初回カメラ起動
+        startCamera();
     </script>
 </body>
 </html>
